@@ -1,0 +1,92 @@
+sequenceDiagram
+    participant Client as Client Company Service
+    participant SDK as Web Component SDK
+    participant IDM as IDM Backend (NestJS)
+    participant WSO2 as WSO2 Identity Server
+    participant DB as Database (Prisma)
+    
+    Note over Client,DB: Phase 1: Initial Authentication & Setup
+    
+    Client->>SDK: Initialize SDK with Client Credentials
+    SDK->>IDM: Request Access Token<br/>(client_id, client_secret)
+    IDM->>WSO2: OAuth2 Token Request<br/>(Client Credentials Grant)
+    WSO2->>WSO2: Validate Client Credentials
+    WSO2-->>IDM: Return Access Token (JWT)
+    IDM->>DB: Verify client_license table<br/>(check active license)
+    DB-->>IDM: License Status & Permissions
+    IDM-->>SDK: Access Token + License Metadata
+    SDK-->>Client: SDK Initialized Successfully
+    
+    Note over Client,DB: Phase 2: License Token Generation
+    
+    Client->>SDK: Request License Token<br/>for Contact/User
+    SDK->>IDM: Generate License Token Request<br/>(access_token, contact_id)
+    IDM->>WSO2: Verify Access Token<br/>(Introspect/Validate JWT)
+    WSO2-->>IDM: Token Valid + Claims
+    
+    IDM->>DB: Query contact table<br/>(contact_id)
+    DB-->>IDM: Contact Details
+    
+    IDM->>DB: Query client_license table<br/>(client_id)
+    DB-->>IDM: License Configuration<br/>(features, expiry, limits)
+    
+    IDM->>IDM: Generate License Token<br/>(JWT with license claims)
+    
+    IDM->>DB: Insert contact_license_token<br/>(contact_id, license_token, expires_at)
+    DB-->>IDM: Token Saved
+    
+    IDM-->>SDK: License Token (JWT)
+    SDK-->>Client: License Token
+    
+    Note over Client,DB: Phase 3: License Verification (Preload)
+    
+    Client->>SDK: Preload Verification<br/>(license_token)
+    SDK->>IDM: Verify License Token<br/>(license_token, contact_id)
+    
+    IDM->>DB: Query contact_license_token<br/>(license_token)
+    DB-->>IDM: Token Record (status, expiry)
+    
+    alt Token Expired or Invalid
+        IDM-->>SDK: Token Invalid/Expired
+        SDK-->>Client: License Verification Failed
+        Client->>SDK: Request New License Token
+    else Token Valid
+        IDM->>WSO2: Verify Token Signature<br/>(Optional: Additional Validation)
+        WSO2-->>IDM: Signature Valid
+        
+        IDM->>DB: Check License Status<br/>(client_license table)
+        DB-->>IDM: Active License + Features
+        
+        IDM->>DB: Update contact_license_token<br/>(last_verified_at)
+        DB-->>IDM: Updated
+        
+        IDM-->>SDK: License Valid + Permissions<br/>(features, limits)
+        SDK-->>Client: Access Granted + Feature Flags
+    end
+    
+    Note over Client,DB: Phase 4: Continuous Operations
+    
+    loop Every API Request (Optional)
+        Client->>SDK: API Call with License Token
+        SDK->>SDK: Cache Validation<br/>(reduce backend calls)
+        alt Cache Valid
+            SDK-->>Client: Proceed with Request
+        else Cache Expired
+            SDK->>IDM: Revalidate License Token
+            IDM->>DB: Quick Token Check
+            DB-->>IDM: Status
+            IDM-->>SDK: Validation Result
+            SDK-->>Client: Proceed or Deny
+        end
+    end
+    
+    Note over Client,DB: Phase 5: Token Refresh & Expiry
+    
+    SDK->>SDK: Monitor Token Expiry
+    SDK->>IDM: Refresh License Token<br/>(current_token, access_token)
+    IDM->>WSO2: Verify Access Token
+    WSO2-->>IDM: Valid
+    IDM->>DB: Revoke old token<br/>Create new token
+    DB-->>IDM: New Token Created
+    IDM-->>SDK: New License Token
+    SDK->>SDK: Update Local Token Storage
